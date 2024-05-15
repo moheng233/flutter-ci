@@ -7,6 +7,9 @@ The binaries come in 2 variants: generic, and tuned for the Pi 4 CPU.
 
 ### **See [Releases](https://github.com/ardera/flutter_embedded/releases).**
 
+*NOTE*: Some SDK versions, e.g. 3.19.1 are missing. In most cases, that means that SDK uses the same engine as the older release, so 3.19.0 in this case.
+The SDK semantic versions are only provided because they're a bit nicer to read than the raw engine commit hashes, but the engine commits are still the "single source of truth"
+
 # 🛠️ Build Config and Compiler Invocation
 ## Build Config
 The engine build is configured with: [^2]
