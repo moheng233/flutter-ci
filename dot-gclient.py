@@ -7,5 +7,6 @@ solutions = [{
     "download_linux_deps": True,
     "download_android_deps": False,
     "download_esbuild": False,
+    "download_fuchsia_deps": False,
   }
 }]
