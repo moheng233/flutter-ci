@@ -103,19 +103,6 @@ jobs:
           key: engine-${{ needs.resolve-version.outputs.engine-hash }}-${{ runner.os }}
           lookup-only: true
       
-      # Fixes gclient sync error:
-      #   ...
-      #   Traceback (most recent call last):
-      #     File "/Users/runner/work/flutter-ci/flutter-ci/engine/src/third_party/dart/tools/generate_sdk_version_file.py", line 7, in <module>
-      #       import utils
-      #     File "/Users/runner/work/flutter-ci/flutter-ci/engine/src/third_party/dart/tools/utils.py", line 14, in <module>
-      #       import imp
-      #   ModuleNotFoundError: No module named 'imp'
-      #   Error: Command 'python3 src/third_party/dart/tools/generate_sdk_version_file.py' returned non-zero exit status 1 in /Users/runner/work/flutter-ci/flutter-ci/engine
-      - name: Install depot tools requirements
-        run: |
-          ${{ (runner.os == 'MacOS' && 'pip3 install zombie-imp') || (runner.os == 'Linux' && 'true') || 'false' }}
-
       - name: Install depot tools
         id: cache-depot-tools
         if: steps.cache-lookup.outputs.cache-hit != 'true'
