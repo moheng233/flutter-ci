@@ -91,7 +91,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
+          - macos-13
 
     steps:
       - uses: actions/checkout@v3
@@ -217,7 +217,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
+          - macos-13
         artifact-name:
           - pi3
           - pi3-64
@@ -259,25 +259,25 @@ jobs:
 
           # We exclude MacOS builds that don't use profile or release mode
           # because we're only building the gen_snapshot there anyway.
-          - os: macos-latest
+          - os: macos-13
             flavor: debug_unopt
-          - os: macos-latest
+          - os: macos-13
             flavor: debug
           
           # MacOS gen_snapshot is only built for the generic targets.
-          - os: macos-latest
+          - os: macos-13
             artifact-name: pi3
-          - os: macos-latest
+          - os: macos-13
             artifact-name: pi3-64
-          - os: macos-latest
+          - os: macos-13
             artifact-name: pi4
-          - os: macos-latest
+          - os: macos-13
             artifact-name: pi4-64
           
         include:
           # We don't build the linux engine on MacOS because it's already
           # built by the ubuntu runners.
-          - os: macos-latest
+          - os: macos-13
             os-nice: 'MacOS'
             build-engine: false
             nostripped: true
@@ -361,7 +361,7 @@ jobs:
             artifact-name: x64-generic
             gen-snapshot-path: gen_snapshot
           
-          - os: macos-latest
+          - os: macos-13
             artifact-name: x64-generic
             gen-snapshot-path: clang_x64/gen_snapshot
           
@@ -838,7 +838,7 @@ jobs:
     strategy:
       matrix:
         os:
-          - macos-latest
+          - macos-13
           - ubuntu-latest
         artifact-name:
           - pi3
@@ -932,7 +932,7 @@ jobs:
             --depfile build/kernel_snapshot.d \
             package:test_app/main.dart
             
-          ../binaries/gen_snapshot_${{ matrix.os == 'macos-latest' && 'macos_x64' || 'linux_x64' }}_${{ matrix.runtime-mode }} \
+          ../binaries/gen_snapshot_${{ matrix.os == 'macos-13' && 'macos_x64' || 'linux_x64' }}_${{ matrix.runtime-mode }} \
             --deterministic \
             --snapshot_kind=app-aot-elf \
             --elf=build/flutter_assets/app.so \
