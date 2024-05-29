@@ -10,120 +10,98 @@ on:
   workflow_dispatch:
   workflow_call:
   
+
+defaults:
+  # Use bash by default for all jobs, regardless of OS,
+  # so we can use the same commands for windows.
+  run:
+    shell: bash
+
+env:
+  XZ_DEFAULTS: "-T 0"
+  GCLIENT_PY3: 1
+  DEPOT_TOOLS_UPDATE: 0
+  DEPOT_TOOLS_WIN_TOOLCHAIN: 0
+
 jobs:
   resolve-version:
     name: 'Resolve relevant flutter versions'
     runs-on: ubuntu-latest
     outputs:
-      engine-hash: ${{ steps.engine-commit.outputs.hash }}
-      first-semver: ${{ steps.flutter-sdk-version.outputs.first-semver }}
-      sdk-semvers: ${{ steps.flutter-sdk-version.outputs.semvers }}
+      engine-hash: ${{ steps.resolve.outputs.hash }}
+      first-semver: ${{ steps.resolve.outputs.first-semver }}
+      sdk-semvers: ${{ steps.resolve.outputs.semvers }}
     steps:
-      - uses: actions/checkout@v3
-        
-      - run: |
-          echo github.ref: ${{ github.ref }}
+      - uses: actions/checkout@v4
 
-      - name: Read stable engine version
-        id: engine-commit
+      - name: Resolve engine hash & SDK version
+        id: resolve
+        env:
+          GIT_BASECMD: "git -c gc.autoDetach=false -c core.pager=cat -c safe.bareRepository=all"
+          ENGINE_REPO: "https://github.com/flutter/engine.git"
+        run: |
+          # read the engine.version.stable file to find the engine commit hash
+          # we're build for
+          ENGINE_HASH=$(cat engine.version.stable | tr -dc [:xdigit:])
 
-        # Read the engine.version.stable file and trim away anything that's not a hex digit
-        # (So we don't include whitespace in the output variable, if that's possible)
-        run: echo "hash=$(cat engine.version.stable | tr -dc [:xdigit:])" >> $GITHUB_OUTPUT
-      
-      - name: Log stable engine version
-        run: |
-          echo stable engine version: "${{ steps.engine-commit.outputs.hash }}"
-      
-      - name: Cache flutter engine
-        id: cache-engine
-        uses: actions/cache@v3
-        with:
-          key: ${{ runner.os }}-flutter-engine
-          path: flutter_engine
-
-      # We need to checkout the complete flutter SDK to find the semver.
-      - name: Checkout flutter engine
-        uses: actions/checkout@v3
-        with:
-          repository: flutter/engine
-          ref: ${{ steps.engine-commit.outputs.hash }}
-          path: flutter_engine
-          fetch-depth: 0  # fetch complete history
-      
-      - name: Log git status
-        working-directory: flutter_engine
-        run: |
-          git status
-          git tag -l --points-at ${{ steps.engine-commit.outputs.hash }}
-      
-      # reference: https://github.com/flutter/flutter/blob/a880c4ed3590477380c975f867406ba336834848/packages/flutter_tools/lib/src/version.dart#L703
-      # if the flutter people ever decide to point more than one tags at the stable SDK commit we're in trouble here
-      - name: Find out flutter SDK semvers for this engine version
-        id: flutter-sdk-version
-        working-directory: flutter_engine
-        run: |
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-         
-          echo "semvers<<$EOF" >> "$GITHUB_OUTPUT"
-          (( echo "[" && git tag -l --points-at ${{ steps.engine-commit.outputs.hash }} --format='"%(refname:strip=2)",' && echo "null]" ) | tr -d [:space:] ) | jq -cM .[:-1] >> "$GITHUB_OUTPUT"
-          echo "$EOF" >> "$GITHUB_OUTPUT"
-
-          echo "first-semver=$(git tag -l --points-at ${{ steps.engine-commit.outputs.hash }} | head -n1)" >> "$GITHUB_OUTPUT"
-
-      - name: Log flutter SDK semvers
-        run: |
-          echo unparsed flutter sdk semvers for engine "${{ steps.engine-commit.outputs.hash }}":
-          echo "${{ steps.flutter-sdk-version.outputs.semvers }}"
-      
-      - name: Parse flutter SDK semvers
-        run: |
-          echo parsed semvers:
-          echo ${{ fromJson(steps.flutter-sdk-version.outputs.semvers) }}
+          # Get all (full-qualified) tags that point to the engine commit
+          # e.g. refs/tags/2.10.0-0.0.pre.0
+          REFS=$($GIT_BASECMD ls-remote --tags $ENGINE_REPO | grep $ENGINE_HASH | cut -f2)
+          
+          # Extract the tag names from the full-qualified refs
+          # e.g. 2.10.0-0.0.pre.0
+          TAGS=$(echo "$REFS" | cut -d/ -f3 | sort -V)
+          
+          # Extract the first tag
+          FIRST_TAG=$(echo "$TAGS" | head -n1)
+          
+          # Serialize the tags to JSON
+          TAGS_JSON="$(echo "$TAGS" | jq -ncMR '[inputs]')"
+          
+          echo "hash=$ENGINE_HASH" >> $GITHUB_OUTPUT
+          echo "first-semver=$FIRST_TAG" >> $GITHUB_OUTPUT
+          echo "semvers=$TAGS_JSON" >> $GITHUB_OUTPUT
 
   populate-engine-src-cache:
     name: 'Prepopulate engine source cache'
     runs-on: ${{ matrix.os }}
     needs: resolve-version
-    
-    # run on macos and linux.
     strategy:
       matrix:
         os:
           - ubuntu-latest
           - macos-13
-
+          - windows-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
-      - uses: actions/cache/restore@v3
+      - uses: actions/cache/restore@v4
         id: cache-lookup
         with:
           path: engine
-          key: engine-${{ needs.resolve-version.outputs.engine-hash }}-${{ runner.os }}
+          key: engine-${{ needs.resolve-version.outputs.engine-hash }}-${{ runner.os }}-${{ runner.arch }}
           lookup-only: true
       
       - name: Install depot tools
         id: cache-depot-tools
         if: steps.cache-lookup.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/depot_tools
-          key: ${{ runner.os }}-depot-tools
+          key: ${{ runner.os }}-${{ runner.arch }}-depot-tools
 
       - name: Clone depot_tools (if not cached)
         if: steps.cache-lookup.outputs.cache-hit != 'true' && steps.cache-depot-tools.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
         run: |
           git clone --depth 1 \
             https://chromium.googlesource.com/chromium/tools/depot_tools.git \
-            ${{ github.workspace }}/depot_tools
+            ./depot_tools
       
       - name: Setup depot_tools
         if: steps.cache-lookup.outputs.cache-hit != 'true'
         run: |
-          echo GCLIENT_PY3=1 >> $GITHUB_ENV
           echo $GITHUB_WORKSPACE/depot_tools >> $GITHUB_PATH
-        # echo DEPOT_TOOLS_UPDATE=0 >> $GITHUB_ENV
       
       - name: Print depot_tools debug info
         if: steps.cache-lookup.outputs.cache-hit != 'true'
@@ -140,9 +118,11 @@ jobs:
       - name: Check if engine has dead libcxx repo
         id: check-dead-libcxx-repo
         if: steps.cache-lookup.outputs.cache-hit != 'true'
+        env:
+          WGET_COMMAND: ${{ runner.os == 'Windows' && 'C:\msys64\usr\bin\wget.exe' || 'wget' }}
         run: |
           echo "::group::Downloading DEPS file"
-          wget https://raw.githubusercontent.com/flutter/engine/${{ needs.resolve-version.outputs.engine-hash }}/DEPS
+          $WGET_COMMAND https://raw.githubusercontent.com/flutter/engine/${{ needs.resolve-version.outputs.engine-hash }}/DEPS
           echo "::endgroup::"
           
           echo "::group::DEPS file contents"
@@ -175,9 +155,19 @@ jobs:
       - name: Install engine sources
         if: steps.cache-lookup.outputs.cache-hit != 'true'
         working-directory: engine
+        env:
+          DEPOT_TOOLS_UPDATE: 1
         run: |
           gclient sync --no-history --shallow --revision src/flutter@${{ needs.resolve-version.outputs.first-semver }} -R -D
       
+      - name: Install linux arm sysroot
+        if: steps.cache-lookup.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        working-directory: engine/src/build/linux/sysroot_scripts
+        run: |
+          ./install-sysroot.py --arch=arm
+          ./install-sysroot.py --arch=arm64
+          ./install-sysroot.py --arch=amd64
+
       - name: Delete unneeded dependencies
         if: steps.cache-lookup.outputs.cache-hit != 'true'
         working-directory: engine
@@ -203,261 +193,170 @@ jobs:
             popd
           done
       
-      - uses: actions/cache/save@v3
+      - uses: actions/cache/save@v4
         if: steps.cache-lookup.outputs.cache-hit != 'true'
+        env:
+          ZSTD_CLEVEL: 19
         with:
           path: engine
-          key: engine-${{ needs.resolve-version.outputs.engine-hash }}-${{ runner.os }}
+          key: engine-${{ needs.resolve-version.outputs.engine-hash }}-${{ runner.os }}-${{ runner.arch }}
   
-  build:
-    name: "build ${{ matrix.build-universal && 'universal artifacts' || '' }}${{ matrix.build-engine && format('engine for {0} {1}', matrix.artifact-name, matrix.flavor) || '' }}${{ matrix.build-engine && matrix.build-gen-snapshot && ', ' || ''}}${{ matrix.build-gen-snapshot && format('{0} gen_snapshot for {1} {2}', matrix.os-nice, matrix.artifact-name, matrix.flavor) || ''}}"
-    runs-on: ${{ matrix.os }}
-    needs: [ resolve-version, populate-engine-src-cache ]
-    strategy:
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-13
-        artifact-name:
-          - pi3
-          - pi3-64
-          - pi4
-          - pi4-64
-          - armv7-generic
-          - aarch64-generic
-          - x64-generic
-        flavor:
-          - debug_unopt
-          - debug
-          - profile
-          - release
-        exclude:
-          # for pi3, pi3-64, pi4, pi4-64 we only build the profile and release flavors.
-          # you the point of the pi3, pi4 specific artifacts is CPU-specific optimizations & tuning.
-          # (-mcpu, -mtune)
-          # You don't need CPU-specific optimizations for (unoptimized) debug builds.
-          # Instead, reuse the armv7-generic and aarch64-generic binaries there.
-          - artifact-name: pi3
-            flavor: debug_unopt
-          - artifact-name: pi3
-            flavor: debug
-          
-          - artifact-name: pi3-64
-            flavor: debug_unopt
-          - artifact-name: pi3-64
-            flavor: debug
-          
-          - artifact-name: pi4
-            flavor: debug_unopt
-          - artifact-name: pi4
-            flavor: debug
-          
-          - artifact-name: pi4-64
-            flavor: debug_unopt
-          - artifact-name: pi4-64
-            flavor: debug
-
-          # We exclude MacOS builds that don't use profile or release mode
-          # because we're only building the gen_snapshot there anyway.
-          - os: macos-13
-            flavor: debug_unopt
-          - os: macos-13
-            flavor: debug
-          
-          # MacOS gen_snapshot is only built for the generic targets.
-          - os: macos-13
-            artifact-name: pi3
-          - os: macos-13
-            artifact-name: pi3-64
-          - os: macos-13
-            artifact-name: pi4
-          - os: macos-13
-            artifact-name: pi4-64
-          
-        include:
-          # We don't build the linux engine on MacOS because it's already
-          # built by the ubuntu runners.
-          - os: macos-13
-            os-nice: 'MacOS'
-            build-engine: false
-            nostripped: true
-            split-debug-symbols: false
-
-          - os: ubuntu-latest
-            os-nice: 'Linux'
-            build-engine: true
-            nostripped: true
-            split-debug-symbols: true
-
-          # debug_unopt is a debug build with -O0 and -ggdb -fdebug-default-version=4
-          - flavor: debug_unopt
-            runtime-mode: debug
-            unoptimized: true
-            build-gen-snapshot: false
-          
-          - flavor: debug
-            runtime-mode: debug
-            unoptimized: false
-            build-gen-snapshot: false
-          
-          - flavor: profile
-            runtime-mode: profile
-            unoptimized: false
-            build-gen-snapshot: true
-          
-          - flavor: release
-            runtime-mode: release
-            unoptimized: false
-            build-gen-snapshot: true
-            
-          # Pi 3 is a Cortex A53.
-          # -mcpu=cortex-a53 -mtune=cortex-a53
-          - artifact-name: pi3
-            cpu: arm
-            arm-cpu: cortex-a53+nocrypto
-            arm-tune: cortex-a53
-            gen-snapshot-path: clang_x64/gen_snapshot
-          
-          - artifact-name: pi3-64
-            cpu: arm64
-            arm-cpu: cortex-a53+nocrypto
-            arm-tune: cortex-a53
-            gen-snapshot-path: clang_x64/gen_snapshot
-            
-          # Pi 4 is a Cortex-A72, but doesn't support cryptography instructions.
-          # Use -mcpu=cortex-a72+nocrypto -mtune=cortex-a72
-          - artifact-name: pi4
-            cpu: arm
-            arm-cpu: cortex-a72+nocrypto
-            arm-tune: cortex-a72
-            gen-snapshot-path: clang_x64/gen_snapshot
-
-          - artifact-name: pi4-64
-            cpu: arm64
-            arm-cpu: cortex-a72+nocrypto
-            arm-tune: cortex-a72
-            gen-snapshot-path: clang_x64/gen_snapshot
-          
-          # Use -mcpu=generic -mtune=generic for the generic builds.
-          - artifact-name: armv7-generic
-            cpu: arm
-            arm-cpu: generic
-            arm-tune: generic
-            gen-snapshot-path: clang_x64/gen_snapshot
-            
-          - artifact-name: aarch64-generic
-            cpu: arm64
-            arm-cpu: generic
-            arm-tune: generic
-            gen-snapshot-path: clang_x64/gen_snapshot
-          
-          - artifact-name: x64-generic
-            cpu: x64
-          
-          # For x64, we need to differentiate between ubuntu and macos host.
-          # For ubuntu x64, the gen_snapshot target is just gen_snapshot,
-          # for macOS x64, the gen_snapshot target is clang_x64/gen_snapshot.
-          - os: ubuntu-latest
-            artifact-name: x64-generic
-            gen-snapshot-path: gen_snapshot
-          
-          - os: macos-13
-            artifact-name: x64-generic
-            gen-snapshot-path: clang_x64/gen_snapshot
-          
-          # One-off job for building the universal artifacts.
-          - artifact-name: universal
-            os: ubuntu-latest
-            # flavor:
-            # unoptimized:
-            # runtime-mode:
-            nostripped: false
-            build-engine: false
-            build-gen-snapshot: false
-            build-universal: true
-            split-debug-symbols: false
-            # gen-snapshot-path: 
-            # cpu: 
-            # arm-cpu:
-            # arm-tune: 
-          
+  load-matrix:
+    name: 'Generate build matrix'
+    runs-on: ubuntu-latest
+    container:
+      image: dart:3.4
+    outputs:
+      matrix: ${{ steps.load-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v3
+      # checkout
+      - uses: actions/checkout@v4
+
+      - working-directory: workflow_tool
+        run: |
+          dart pub get
+      
+      # execute the workflow_tool to generate the matrix and store in matrix output variable
+      - name: Load matrix
+        working-directory: workflow_tool
+        id: load-matrix
+        run: |
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+
+          echo "matrix<<$EOF" >> "$GITHUB_OUTPUT"
+          dart run bin/workflow_tool.dart >> "$GITHUB_OUTPUT"
+          echo "$EOF" >> "$GITHUB_OUTPUT"
+      
+      - name: Test load matrix
+        run: |
+          apt-get update && apt-get install -y jq
+
+          echo "::group::raw matrix"
+          echo '${{ steps.load-matrix.outputs.matrix }}'
+          echo "::endgroup::"
+
+          echo "::group::jq prettify matrix"
+          echo '${{ steps.load-matrix.outputs.matrix }}' | jq .
+          echo "::endgroup::"
+
+          echo "::group::parsed & serialized matrix"
+          echo '${{ toJson(fromJson(steps.load-matrix.outputs.matrix)) }}'
+          echo "::endgroup::"
+
+          echo "::group::jq prettify parsed & serialized matrix"
+          echo '${{ toJson(fromJson(steps.load-matrix.outputs.matrix)) }}' | jq .
+          echo "::endgroup::"
+
+  build:
+    name: ${{ matrix.job-name }}
+    runs-on: ${{ matrix.os }}
+    needs: [ resolve-version, populate-engine-src-cache, load-matrix ]
+    strategy:
+      matrix: 
+        include: ${{ fromJson(needs.load-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Log engine version & Build config
         run: |
-          echo *** engine version: ***
+          echo '*** engine version: ***'
           echo ${{ needs.resolve-version.outputs.engine-hash }}
-          echo '*** build config: ***'
+
+          echo '*** runner config: ***'
           echo matrix.os: ${{ matrix.os }}
+          echo matrix.os-nice: ${{ matrix.os-nice }}
           echo runner.os: ${{ runner.os }}
+          echo runner.arch: ${{ runner.arch }}
+          
+          echo '*** target config: ***'
           echo artifact name: ${{ matrix.artifact-name }}
-          echo flavor: ${{ matrix.flavor }}
-          echo runtime-mode: ${{ matrix.runtime-mode }}
-          echo unoptimized: ${{ matrix.unoptimized }}
-          echo no-stripped: ${{ matrix.nostripped }}
-          echo build-engine: ${{ matrix.build-engine }}
-          echo build-gen-snapshot: ${{ matrix.build-gen-snapshot }}
-          echo build-universal: ${{ matrix.build-universal }}
-          echo split debug symbols: ${{ matrix.split-debug-symbols }}
-          echo gen_snapshot path: ${{ matrix.gen-snapshot-path }}
           echo cpu: ${{ matrix.cpu }}
           echo arm-cpu: ${{ matrix.arm-cpu }}
           echo arm-tune: ${{ matrix.arm-tune }}
-      
+          
+          echo '*** engine config: ***'
+          echo build-engine: ${{ matrix.build-engine }}
+          echo flavor: ${{ matrix.flavor }}
+          echo runtime-mode: ${{ matrix.runtime-mode }}
+          echo unoptimized: ${{ matrix.unoptimized }}
+          echo split debug symbols: ${{ matrix.split-debug-symbols }}
+          echo no-stripped: ${{ matrix.nostripped }}
+          
+          echo '*** gen_snapshot config: ***'
+          echo flavor: ${{ matrix.flavor }}
+          echo runtime-mode: ${{ matrix.runtime-mode }}
+          echo build-arm-gen-snapshot: ${{ matrix.build-arm-gen-snapshot }}
+          echo build-arm64-gen-snapshot: ${{ matrix.build-arm64-gen-snapshot }}
+          echo build-x64-gen-snapshot: ${{ matrix.build-x64-gen-snapshot }}
+          echo arm-gen-snapshot-path: ${{ matrix.arm-gen-snapshot-path }}
+          echo arm64-gen-snapshot-path: ${{ matrix.arm64-gen-snapshot-path }}
+          echo x64-gen-snapshot-path: ${{ matrix.x64-gen-snapshot-path }}
+          
+          echo build-universal: ${{ matrix.build-universal }}
+
+          echo "GITHUB_WORKSPACE_UNIX=$(realpath .)" >> $GITHUB_ENV
+          echo "BUILD_DIR=$(realpath .)/engine/src/out/build" >> $GITHUB_ENV
+          
       - name: Cache depot tools
         id: cache-depot-tools
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/depot_tools
-          key: ${{ runner.os }}-depot-tools
+          key: ${{ runner.os }}-${{ runner.arch }}-depot-tools
       
       - name: Clone depot tools
         if: steps.cache-depot-tools.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
         run: |
           git clone --depth 1 \
             https://chromium.googlesource.com/chromium/tools/depot_tools.git \
-            ${{ github.workspace }}/depot_tools
+            ./depot_tools
 
-      - name: Setup depot tools
+      - name: add depot_tools to path (unix)
+        if: runner.os != 'Windows'
         run: |
-          echo GCLIENT_PY3=1 >> $GITHUB_ENV
-          echo DEPOT_TOOLS_UPDATE=0 >> $GITHUB_ENV
-          echo $GITHUB_WORKSPACE/depot_tools >> $GITHUB_PATH
+          echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
+          
+      - name: add depot_tools to path (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          echo "${{ github.workspace }}\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       
       - name: Run gclient --version
+        env:
+          DEPOT_TOOLS_UPDATE: 1
         run: |
           gclient --version
           
       - name: Download cached engine sources
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         id: cache
         env:
           SEGMENT_DOWNLOAD_TIMEOUT_MINS: 10
         with:
           path: engine
-          key: engine-${{ needs.resolve-version.outputs.engine-hash }}-${{ runner.os }}
+          key: engine-${{ needs.resolve-version.outputs.engine-hash }}-${{ runner.os }}-${{ runner.arch }}
           fail-on-cache-miss: true
   
       - name: Apply patches
         working-directory: engine/src
-
         # use git apply instead of git am to avoid `Committer identity unknown` error
         run: |
           echo Applying buildroot patches... 
-          git apply $GITHUB_WORKSPACE/buildroot-patches/*.patch
+          git apply $GITHUB_WORKSPACE_UNIX/buildroot-patches/*.patch
           git status
           
           pushd flutter
           echo Applying engine patches...
-          git apply $GITHUB_WORKSPACE/engine-patches/*.patch
+          git apply $GITHUB_WORKSPACE_UNIX/engine-patches/*.patch
           git status
           popd
 
-          if [ -d "$GITHUB_WORKSPACE/dart-patches" ]; then
+          if [ -d "$GITHUB_WORKSPACE_UNIX/dart-patches" ]; then
             pushd third_party/dart
 
-            git apply $GITHUB_WORKSPACE/dart-patches/*.patch
+            git apply $GITHUB_WORKSPACE_UNIX/dart-patches/*.patch
             git status
 
             popd
@@ -467,23 +366,19 @@ jobs:
       # on a buildroot patch.
       - name: Download linux sysroot
         working-directory: engine/src/build/linux/sysroot_scripts
-        if: matrix.cpu
+        if: matrix.cpu && runner.os == 'macOS'
         timeout-minutes: 5
-        run: ./install-sysroot.py --arch=${{ matrix.cpu == 'x64' && 'amd64' || matrix.cpu }}
-
-      - name: Override PKGCONFIG_PATH for linux arm
-        if: matrix.cpu == 'arm'
-        run:
-          echo "PKG_CONFIG_PATH=$GITHUB_WORKSPACE/engine/src/build/linux/debian_sid_arm-sysroot/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
+        run: |
+          ./install-sysroot.py --arch=${{ matrix.cpu == 'x64' && 'amd64' || matrix.cpu }}
 
       - name: Configure engine
-        working-directory: engine
+        working-directory: engine/src
         run: |
-          ./src/flutter/tools/gn \
+          ./flutter/tools/gn \
             ${{ matrix.runtime-mode && format('--runtime-mode {0}', matrix.runtime-mode) || '' }} \
             ${{ matrix.cpu && '--target-os linux' || '' }} \
             ${{ matrix.cpu && format('--linux-cpu {0}', matrix.cpu) || '' }} \
-            ${{ matrix.cpu == 'arm' && '--arm-float-abi hard' || ''}} \
+            --arm-float-abi hard \
             --target-dir build \
             --embedder-for-target \
             --disable-desktop-embeddings \
@@ -492,38 +387,26 @@ jobs:
             --no-enable-unittests \
             --no-goma \
             ${{ matrix.unoptimized && '--unoptimized' || ''}} \
-            ${{ matrix.nostripped && '--no-stripped' || ''}}
-      
-            
-      # TODO: Use --gn-args argument to specify arm_cpu and arm_tune.
-      - name: Append arm_cpu & arm_tune args
-        if: ${{ matrix.arm-cpu || matrix.arm-tune }}
-        working-directory: engine/src/out/build/
-        run: |
-          echo 'arm_cpu = "${{ matrix.arm-cpu }}"' >> args.gn
-          echo 'arm_tune = "${{ matrix.arm-tune }}"' >> args.gn
-          echo '*** args.gn file: ***'
-          cat args.gn
-          echo '*** rerunning gn gen ***'
-          gn gen --export-compile-commands .
+            ${{ matrix.nostripped && '--no-stripped' || ''}} \
+            ${{ matrix.arm-cpu && format('--gn-args ''arm_cpu="{0}"''', matrix.arm-cpu) || '' }} \
+            ${{ matrix.arm-tune && format('--gn-args ''arm_tune="{0}"''', matrix.arm-tune) || '' }}
       
       - name: Build engine
-        shell: bash
         working-directory: engine/src/out/build
         run: |
           ninja \
             ${{ matrix.build-engine && 'libflutter_engine.so' || '' }} \
-            ${{ matrix.build-gen-snapshot && matrix.gen-snapshot-path || '' }} \
+            ${{ matrix.build-x64-gen-snapshot && matrix.x64-gen-snapshot-path || '' }} \
+            ${{ matrix.build-arm-gen-snapshot && matrix.arm-gen-snapshot-path || '' }} \
+            ${{ matrix.build-arm64-gen-snapshot && matrix.arm64-gen-snapshot-path || '' }} \
             ${{ matrix.build-universal && 'flutter_embedder.h icudtl.dat' || '' }}
 
       - name: Add engine.version and dart-sdk.version file
         if: matrix.build-universal
-        env:
-          BUILD_DIR: ${{ github.workspace }}/engine/src/out/build/
         run: |
           cp engine.version.stable $BUILD_DIR/engine.version
-
-          pushd ${{ github.workspace }}/engine/src/third_party/dart
+          
+          pushd $GITHUB_WORKSPACE_UNIX/engine/src/third_party/dart
           git rev-parse HEAD > $BUILD_DIR/dart-sdk.version
           popd
       
@@ -531,7 +414,7 @@ jobs:
         if: matrix.build-engine && matrix.split-debug-symbols
         working-directory: ${{ github.workspace }}/engine/src/out/build/
         run: |
-          OBJCOPY='${{ github.workspace }}/engine/src/flutter/buildtools/linux-x64/clang/bin/llvm-objcopy'
+          OBJCOPY="$GITHUB_WORKSPACE_UNIX/engine/src/flutter/buildtools/linux-x64/clang/bin/llvm-objcopy"
           
           $OBJCOPY --only-keep-debug libflutter_engine.so libflutter_engine.dbgsyms
           $OBJCOPY --strip-debug libflutter_engine.so
@@ -539,9 +422,6 @@ jobs:
       
       - name: Package engine
         if: matrix.build-engine
-        env:
-          BUILD_DIR: ${{ github.workspace }}/engine/src/out/build/
-          XZ_DEFAULTS: "-T 0"
         run: |
           mkdir -p pkg-engine
 
@@ -552,9 +432,6 @@ jobs:
 
       - name: Package engine debug symbols
         if: matrix.build-engine && matrix.split-debug-symbols
-        env:
-          BUILD_DIR: ${{ github.workspace }}/engine/src/out/build/
-          XZ_DEFAULTS: "-T 0"
         run: |
           mkdir -p pkg-engine-dbgsyms
 
@@ -566,24 +443,38 @@ jobs:
           
           tar -cJvf ../engine-dbgsyms-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz *
 
-      - name: Package gen_snapshot
-        if: matrix.build-gen-snapshot
-        env:
-          BUILD_DIR: ${{ github.workspace }}/engine/src/out/build/
-          XZ_DEFAULTS: "-T 0"
+      - name: Package x64 gen_snapshot
+        if: matrix.build-x64-gen-snapshot
         run: |
-          mkdir -p pkg-gen-snapshot
+          mkdir -p pkg-x64-gen-snapshot
 
-          pushd pkg-gen-snapshot
-          cp $BUILD_DIR/${{ matrix.gen-snapshot-path }} $BUILD_DIR/compile_commands.json .
+          pushd pkg-x64-gen-snapshot
+          cp $BUILD_DIR/${{ matrix.x64-gen-snapshot-path }} $BUILD_DIR/compile_commands.json .
           
-          tar -cJvf ../gen-snapshot-${{ runner.os }}-${{ runner.arch }}-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz *
+          tar -cJvf ../gen-snapshot-${{ runner.os }}-X64-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz *
 
+      - name: Package arm gen_snapshot
+        if: matrix.build-arm-gen-snapshot
+        run: |
+          mkdir -p pkg-arm-gen-snapshot
+
+          pushd pkg-arm-gen-snapshot
+          cp $BUILD_DIR/${{ matrix.arm-gen-snapshot-path }} $BUILD_DIR/compile_commands.json .
+          
+          tar -cJvf ../gen-snapshot-${{ runner.os }}-ARM-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz *
+
+      - name: Package arm64 gen_snapshot
+        if: matrix.build-arm64-gen-snapshot
+        run: |
+          mkdir -p pkg-arm64-gen-snapshot
+
+          pushd pkg-arm64-gen-snapshot
+          cp $BUILD_DIR/${{ matrix.arm64-gen-snapshot-path }} $BUILD_DIR/compile_commands.json .
+          
+          tar -cJvf ../gen-snapshot-${{ runner.os }}-ARM64-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz *
+  
       - name: Package universal artifacts
         if: matrix.build-universal
-        env:
-          BUILD_DIR: ${{ github.workspace }}/engine/src/out/build/
-          XZ_DEFAULTS: "-T 0"
         run: |
           mkdir -p pkg-universal
 
@@ -597,100 +488,101 @@ jobs:
           
           tar -cJvf ../universal.tar.xz *
 
-      - name: Upload gen_snapshot
-        if: matrix.build-gen-snapshot
-        uses: actions/upload-artifact@v3
+      - name: Upload x64 gen_snapshot
+        if: matrix.build-x64-gen-snapshot
+        uses: actions/upload-artifact@v4
         with:
-          name: gen-snapshot-${{ runner.os }}-${{ matrix.artifact-name }}-${{ matrix.flavor }}
-          path: pkg-gen-snapshot/*
+          name: gen-snapshot-${{ runner.os }}-X64-${{ matrix.artifact-name }}-${{ matrix.flavor }}
+          path: pkg-x64-gen-snapshot/*
       
-      - name: Upload gen_snapshot (.tar.xz)
-        if: matrix.build-gen-snapshot
-        uses: actions/upload-artifact@v3
+      - name: Upload x64 gen_snapshot (.tar.xz)
+        if: matrix.build-x64-gen-snapshot
+        uses: actions/upload-artifact@v4
         with:
-          name: gen-snapshot-${{ runner.os }}-${{ runner.arch }}-${{ matrix.artifact-name }}-${{ matrix.flavor }}-tar-xz
-          path: gen-snapshot-${{ runner.os }}-${{ runner.arch }}-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz
+          name: gen-snapshot-${{ runner.os }}-X64-${{ matrix.artifact-name }}-${{ matrix.flavor }}-tar-xz
+          path: gen-snapshot-${{ runner.os }}-X64-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz
+
+      - name: Upload arm gen_snapshot
+        if: matrix.build-arm-gen-snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen-snapshot-${{ runner.os }}-ARM-${{ matrix.artifact-name }}-${{ matrix.flavor }}
+          path: pkg-arm-gen-snapshot/*
+        
+      - name: Upload arm gen_snapshot (.tar.xz)
+        if: matrix.build-arm-gen-snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen-snapshot-${{ runner.os }}-ARM-${{ matrix.artifact-name }}-${{ matrix.flavor }}-tar-xz
+          path: gen-snapshot-${{ runner.os }}-ARM-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz
+    
+      - name: Upload arm64 gen_snapshot
+        if: matrix.build-arm64-gen-snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen-snapshot-${{ runner.os }}-ARM64-${{ matrix.artifact-name }}-${{ matrix.flavor }}
+          path: pkg-arm64-gen-snapshot/*
+        
+      - name: Upload arm64 gen_snapshot (.tar.xz)
+        if: matrix.build-arm64-gen-snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen-snapshot-${{ runner.os }}-ARM64-${{ matrix.artifact-name }}-${{ matrix.flavor }}-tar-xz
+          path: gen-snapshot-${{ runner.os }}-ARM64-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz
 
       - name: Upload engine
         if: matrix.build-engine
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: engine-${{ matrix.artifact-name }}-${{ matrix.flavor }}
           path: pkg-engine/*
       
       - name: Upload engine (.tar.xz)
         if: matrix.build-engine
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: engine-${{ matrix.artifact-name }}-${{ matrix.flavor }}-tar-xz
           path: engine-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz
       
       - name: Upload engine debug symbols
         if: matrix.build-engine
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: engine-${{ matrix.artifact-name }}-${{ matrix.flavor }}
+          name: engine-dbgsyms-${{ matrix.artifact-name }}-${{ matrix.flavor }}
           path: pkg-engine-dbgsyms/*
       
       - name: Upload engine debug symbols (.tar.xz)
         if: matrix.build-engine
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: engine-dbgsyms-${{ matrix.artifact-name }}-${{ matrix.flavor }}-tar-xz
           path: engine-dbgsyms-${{ matrix.artifact-name }}-${{ matrix.flavor }}.tar.xz
             
       - name: Upload universal artifacts
         if: matrix.build-universal
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: universal
           path: pkg-universal/*
       
       - name: Upload universal artifacts (.tar.xz)
         if: matrix.build-universal
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: universal-tar-xz
           path: universal.tar.xz
 
   package:
-    name: 'Package artifacts'
+    name: 'Package artifacts for old engine binaries repo'
     runs-on: ubuntu-latest
     needs: [build, resolve-version]
     strategy:
       matrix:
         artifact-name:
-          - pi3
-          - pi3-64
-          - pi4
-          - pi4-64
           - armv7-generic
           - aarch64-generic
-          - x64-generic
-        
-        include:
-          # For each artifact (target), we also have an architecture-generic variant.
-          # We use those for debug & debug_unopt, since we don't actually build architecture-specific
-          # artifacts there.
-          - artifact-name: pi3
-            generic-arch-artifact-name: armv7-generic
-          - artifact-name: pi3-64
-            generic-arch-artifact-name: aarch64-generic
-
-          - artifact-name: pi4
-            generic-arch-artifact-name: armv7-generic
-          - artifact-name: pi4-64
-            generic-arch-artifact-name: aarch64-generic
-
-          - artifact-name: armv7-generic
-            generic-arch-artifact-name: armv7-generic
-          - artifact-name: aarch64-generic
-            generic-arch-artifact-name: aarch64-generic
-          
-          - artifact-name: x64-generic
-            generic-arch-artifact-name: x64-generic
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Log engine version & Build config
         run: |
@@ -698,61 +590,57 @@ jobs:
           echo ${{ needs.resolve-version.outputs.engine-hash }}
           echo '*** config: ***'
           echo artifact name: ${{ matrix.artifact-name }}
-          echo generic-arch-artifact-name: ${{ matrix.generic-arch-artifact-name }}
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: universal
           path: universal
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
-          name: engine-${{ matrix.generic-arch-artifact-name }}-debug
-          path: debug
-      
-      - uses: actions/download-artifact@v3
-        with:
-          name: engine-${{ matrix.generic-arch-artifact-name }}-debug_unopt
+          name: engine-${{ matrix.artifact-name }}-debug_unopt
           path: debug_unopt
+          
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-${{ matrix.artifact-name }}-debug
+          path: debug
         
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: engine-${{ matrix.artifact-name }}-profile
           path: profile
         
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: engine-${{ matrix.artifact-name }}-release
           path: release
       
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
-          name: gen-snapshot-Linux-${{ matrix.generic-arch-artifact-name }}-profile
+          name: gen-snapshot-Linux-X64-${{ matrix.artifact-name }}-profile
           path: linux-gen-snapshot-profile
         
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
-          name: gen-snapshot-Linux-${{ matrix.generic-arch-artifact-name }}-release
+          name: gen-snapshot-Linux-X64-${{ matrix.artifact-name }}-release
           path: linux-gen-snapshot-release
       
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
-          name: gen-snapshot-macOS-${{ matrix.generic-arch-artifact-name }}-profile
+          name: gen-snapshot-macOS-X64-${{ matrix.artifact-name }}-profile
           path: macos-gen-snapshot-profile
         
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
-          name: gen-snapshot-macOS-${{ matrix.generic-arch-artifact-name }}-release
+          name: gen-snapshot-macOS-X64-${{ matrix.artifact-name }}-release
           path: macos-gen-snapshot-release
-          
+  
       - name: Package artifacts
-        env:
-          XZ_DEFAULTS: "-T 0"
         run: |
           mkdir -p pkg
           
           pushd pkg
-          mv ../engine.version.stable ./engine.version
           mv ../debug_unopt/libflutter_engine.so ./libflutter_engine.so.debug_unopt
           mv ../debug/libflutter_engine.so ./libflutter_engine.so.debug
           mv ../profile/libflutter_engine.so ./libflutter_engine.so.profile
@@ -777,21 +665,6 @@ jobs:
           tar -cJvf ../${{ matrix.artifact-name }}.tar.xz *
           popd
       
-      - name: Package debug symbols
-        env:
-          XZ_DEFAULTS: "-T 0"
-        run: |
-          mkdir -p pkg-dbgsyms
-
-          pushd pkg-dbgsyms
-          mv ../debug_unopt/libflutter_engine.dbgsyms ./libflutter_engine.debug_unopt.dbgsyms
-          mv ../debug/libflutter_engine.dbgsyms ./libflutter_engine.debug.dbgsyms
-          mv ../profile/libflutter_engine.dbgsyms ./libflutter_engine.profile.dbgsyms
-          mv ../release/libflutter_engine.dbgsyms ./libflutter_engine.release.dbgsyms
-
-          tar -cJvf ../${{ matrix.artifact-name }}-dbgsyms.tar.xz *
-          popd
-      
       # Show the complete file tree, and print all metadata (permissions, owner, group, filesize, last modification date)
       - name: Show file tree
         run: |
@@ -799,83 +672,132 @@ jobs:
           tree -apugshDF
       
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: |
             pkg/engine.version
+            pkg/dart-sdk.version
+            pkg/flutter_embedder.h
+            pkg/icudtl.dat
             pkg/libflutter_engine.so.debug_unopt
             pkg/libflutter_engine.so.debug
             pkg/libflutter_engine.so.profile
             pkg/libflutter_engine.so.release
-            pkg/flutter_embedder.h
-            pkg/icudtl.dat
-            pkg/engine.version
-            pkg/dart-sdk.version
             pkg/gen_snapshot_linux_x64_profile
             pkg/gen_snapshot_linux_x64_release
             pkg/gen_snapshot_macos_x64_profile
             pkg/gen_snapshot_macos_x64_release
-      
-      - name: Upload artifacts (.tar.xz)
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ matrix.artifact-name }}-tar-xz
-          path: |
-            ${{ matrix.artifact-name }}.tar.xz
-      
-      - name: Upload debug symbols (.tar.xz)
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ matrix.artifact-name }}-dbgsyms-tar-xz
-          path: |
-            ${{ matrix.artifact-name }}-dbgsyms.tar.xz
   
   build-app:
     name: 'Build test app'
     runs-on: ${{ matrix.os }}
-    needs: [resolve-version, package]
+    needs: [resolve-version, build]
     strategy:
       matrix:
         os:
           - macos-13
           - ubuntu-latest
+          - windows-latest
         artifact-name:
+          - armv7-generic
+          - aarch64-generic
+          - x64-generic
           - pi3
           - pi3-64
           - pi4
           - pi4-64
-          - armv7-generic
-          - aarch64-generic
         flavor:
           - debug_unopt
           - debug
           - profile
           - release
+        
+        exclude:
+          - artifact-name: pi3
+            flavor: debug_unopt
+          - artifact-name: pi3
+            flavor: debug
+          
+          - artifact-name: pi3-64
+            flavor: debug_unopt
+          - artifact-name: pi3-64
+            flavor: debug
+          
+          - artifact-name: pi4
+            flavor: debug_unopt
+          - artifact-name: pi4
+            flavor: debug
+          
+          - artifact-name: pi4-64
+            flavor: debug_unopt
+          - artifact-name: pi4-64
+            flavor: debug
+          
         include:
           - flavor: debug_unopt
             runtime-mode: debug
+            is-aot: false
+            runtime-mode-flags: '--debug-unoptimized'
+
           - flavor: debug
             runtime-mode: debug
+            is-aot: false
+            runtime-mode-flags: '--debug'
+
           - flavor: profile
             runtime-mode: profile
+            is-aot: true
+            runtime-mode-flags: '--profile'
+
           - flavor: release
             runtime-mode: release
+            is-aot: true
+            runtime-mode-flags: '--release'
           
           - artifact-name: pi3
             arch: armv7
+            generic-arch-artifact-name: armv7-generic
+            target-flags: '--arch=arm --cpu=pi3'
+            
           - artifact-name: pi3-64
             arch: aarch64
+            generic-arch-artifact-name: aarch64-generic
+            target-flags: '--arch=arm64 --cpu=pi3'
+            
           - artifact-name: pi4
             arch: armv7
+            generic-arch-artifact-name: armv7-generic
+            target-flags: '--arch=arm --cpu=pi4'
+            
           - artifact-name: pi4-64
             arch: aarch64
+            generic-arch-artifact-name: aarch64-generic
+            target-flags: '--arch=arm64 --cpu=pi4'
+            
           - artifact-name: armv7-generic
             arch: armv7
+            generic-arch-artifact-name: armv7-generic
+            target-flags: '--arch=arm --cpu=generic'
+
           - artifact-name: aarch64-generic
             arch: aarch64
+            generic-arch-artifact-name: aarch64-generic
+            target-flags: '--arch=arm64 --cpu=pi3'
+          
+          - artifact-name: x64-generic
+            arch: x64
+            generic-arch-artifact-name: x64-generic
+            target-flags: '--arch=x64'
+          
+          - os: macos-13
+            gen-snapshot-name: 'gen_snapshot'
+          - os: ubuntu-latest
+            gen-snapshot-name: 'gen_snapshot'
+          - os: windows-latest
+            gen-snapshot-name: 'gen_snapshot.exe'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       # TODO: Use the exact flutter version here
       - uses: subosito/flutter-action@v2
@@ -887,19 +809,37 @@ jobs:
       - name: Determine flutter SDK path
         run: |
           FLUTTER_SDK_PATH=$(dirname $(dirname $(which flutter)))
+          
           echo flutter sdk path: "$FLUTTER_SDK_PATH"
+
           echo "FLUTTER_SDK_PATH=$FLUTTER_SDK_PATH" >> $GITHUB_ENV
       
-      - uses: actions/download-artifact@v3
+      - name: Install flutterpi_tool
+        run: |
+          flutter pub global activate -sgit https://github.com/ardera/flutterpi_tool.git --git-ref feat/support-more-hosts
+      
+      - uses: actions/download-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
-          path: binaries
+          name: universal
+          path: universal
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-${{ matrix.artifact-name }}-${{ matrix.flavor }}
+          path: engine
+
+      - uses: actions/download-artifact@v4
+        if: ${{ matrix.is-aot }}
+        with:
+          name: gen-snapshot-${{ runner.os }}-${{ runner.arch }}-${{ matrix.generic-arch-artifact-name }}-${{ matrix.flavor }}
+          path: gen-snapshot
       
       # Seems like this is necessary. Maybe it's not if we use a tar-file instead.
       - name: Make binaries executable
-        working-directory: binaries
         run: |
-          chmod +x ./libflutter_engine.so* ./gen_snapshot*
+          chmod +x \
+            ./engine/libflutter_engine.so \
+            ${{ matrix.is-aot && format('./gen-snapshot/{0}', matrix.gen-snapshot-name) || '' }}
       
       # Show the complete file tree, and print all metadata (permissions, owner, group, filesize, last modification date)
       - name: Show file tree
@@ -909,14 +849,15 @@ jobs:
           tree -apugshDF
       
       - working-directory: test_app
+        if: false
         run: |
           flutter pub get
           flutter build bundle
-          cp ../binaries/libflutter_engine.so.${{ matrix.flavor }} build/flutter_assets/libflutter_engine.so
-          cp ../binaries/icudtl.dat build/flutter_assets/
+          cp ../engine/libflutter_engine.so build/flutter_assets/libflutter_engine.so
+          cp ../universal/icudtl.dat build/flutter_assets/
       
       - name: Build AOT bundle
-        if: matrix.runtime-mode == 'profile' || matrix.runtime-mode == 'release'
+        if: matrix.is-aot && false
         working-directory: test_app
         run: |
           $FLUTTER_SDK_PATH/bin/cache/dart-sdk/bin/dart \
@@ -932,7 +873,7 @@ jobs:
             --depfile build/kernel_snapshot.d \
             package:test_app/main.dart
             
-          ../binaries/gen_snapshot_${{ matrix.os == 'macos-13' && 'macos_x64' || 'linux_x64' }}_${{ matrix.runtime-mode }} \
+          ../gen-snapshot/${{ matrix.gen-snapshot-name }} \
             --deterministic \
             --snapshot_kind=app-aot-elf \
             --elf=build/flutter_assets/app.so \
@@ -942,11 +883,31 @@ jobs:
             build/kernel_snapshot.dill
             
       - name: Copy asset bundle
+        if: false
         run: |
           cp -r test_app/build/flutter_assets app-assets
+          rm -rf test_app/build
+      
+      - name: Build app using flutterpi_tool
+        working-directory: test_app
+        run: |
+          echo "::group::flutter pub get"
+          flutter pub get
+          echo "::endgroup::"
+          
+          echo "::group::flutterpi_tool build"
+          dart pub global run flutterpi_tool \
+            build ${{ matrix.target-flags}} ${{ matrix.runtime-mode-flags }} \
+            --verbose \
+            --github-artifacts-repo ${{ github.repository }} \
+            --github-artifacts-runid ${{ github.run_id }} \
+            --github-artifacts-auth-token ${{ secrets.GITHUB_TOKEN }}
+          echo "::endgroup::"
+          
+          cp -r build/flutter_assets ../app-assets
 
       - name: Upload app assets
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ runner.os }}-${{ matrix.artifact-name }}-${{ matrix.flavor }}-app-assets
           path: app-assets
@@ -960,6 +921,7 @@ jobs:
         os:
           - Linux
           - macOS
+          - Windows
         artifact-name:
           # - pi3
           - pi3-64
@@ -967,11 +929,23 @@ jobs:
           - pi4-64
           # - armv7-generic
           - aarch64-generic
+          # - x64-generic
         flavor:
           - debug_unopt
           - debug
           - profile
           - release
+        exclude:
+          - artifact-name: pi3-64
+            flavor: debug_unopt
+          - artifact-name: pi3-64
+            flavor: debug
+
+          - artifact-name: pi4-64
+            flavor: debug_unopt
+          - artifact-name: pi4-64
+            flavor: debug
+            
         include:
           - flavor: debug_unopt
             runtime-mode: debug
@@ -994,17 +968,26 @@ jobs:
             # runner: pi4-32
           - artifact-name: aarch64-generic
             runner: pi4-64
+          
+          # - artifact-name: x64-generic
+          #   runner: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.os }}-${{ matrix.artifact-name }}-${{ matrix.flavor }}-app-assets
           path: app
       
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           repository: ardera/flutter-pi
           path: flutter-pi
       
+      - name: Install dependencies
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libgl1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev libdrm-dev libgbm-dev fonts-liberation fontconfig libsystemd-dev libinput-dev libudev-dev libxkbcommon-dev
+
       - name: Configure
         working-directory: flutter-pi
         run: |
@@ -1030,26 +1013,26 @@ jobs:
     if: startsWith(github.ref, 'refs/tags')
    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Log engine version
         run: |
           echo *** engine version: ***
           echo ${{ needs.resolve-version.outputs.engine-hash }}
       
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           repository: ardera/flutter-engine-binaries-for-arm
           token: ${{ secrets.OLD_ENGINE_BINARIES_REPO_TOKEN }}
           path: engine-binaries
           ref: main
       
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: armv7-generic
           path: engine-binaries/arm
       
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: aarch64-generic
           path: engine-binaries/arm64
@@ -1081,14 +1064,14 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Log engine version
         run: |
           echo *** engine version: ***
           echo ${{ needs.resolve-version.outputs.engine-hash }}
       
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           path: all-artifacts
       
