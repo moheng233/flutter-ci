@@ -406,7 +406,7 @@ jobs:
         run: |
           cp engine.version.stable $BUILD_DIR/engine.version
           
-          pushd $GITHUB_WORKSPACE_UNIX/engine/src/third_party/dart
+          pushd $GITHUB_WORKSPACE_UNIX/engine/src/flutter/third_party/dart
           git rev-parse HEAD > $BUILD_DIR/dart-sdk.version
           popd
       
