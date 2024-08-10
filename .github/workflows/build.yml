@@ -814,10 +814,21 @@ jobs:
 
           echo "FLUTTER_SDK_PATH=$FLUTTER_SDK_PATH" >> $GITHUB_ENV
       
+      - name: Add Dart global package bin dir to PATH (unix)
+        if: runner.os != 'Windows'
+        run: |
+          echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
+          
+      - name: Add Dart global package bin dir to PATH (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          echo "%LOCALAPPDATA%\Pub\Cache\bin"| Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      
       - name: Install flutterpi_tool
         run: |
           flutter pub global activate flutterpi_tool
-      
+
       - uses: actions/download-artifact@v4
         with:
           name: universal
@@ -896,7 +907,7 @@ jobs:
           echo "::endgroup::"
           
           echo "::group::flutterpi_tool build"
-          dart pub global run flutterpi_tool \
+          flutterpi_tool \
             build ${{ matrix.target-flags}} ${{ matrix.runtime-mode-flags }} \
             --verbose \
             --github-artifacts-repo ${{ github.repository }} \
