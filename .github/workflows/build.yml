@@ -816,7 +816,7 @@ jobs:
       
       - name: Install flutterpi_tool
         run: |
-          flutter pub global activate -sgit https://github.com/ardera/flutterpi_tool.git --git-ref feat/support-more-hosts
+          flutter pub global activate flutterpi_tool
       
       - uses: actions/download-artifact@v4
         with:
