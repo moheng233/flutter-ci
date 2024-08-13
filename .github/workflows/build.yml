@@ -901,7 +901,7 @@ jobs:
         working-directory: test_app
         run: |
           flutterpi_tool \
-            build ${{ matrix.target-flags}} ${{ matrix.runtime-mode-flags }} \
+            build ${{ matrix.target-flags }} ${{ matrix.runtime-mode-flags }} \
             --verbose \
             --github-artifacts-repo ${{ github.repository }} \
             --github-artifacts-runid ${{ github.run_id }} \
@@ -912,11 +912,11 @@ jobs:
         working-directory: test_app
         shell: pwsh
         run: |
-          flutterpi_tool \
-            build ${{ matrix.target-flags}} ${{ matrix.runtime-mode-flags }} \
-            --verbose \
-            --github-artifacts-repo ${{ github.repository }} \
-            --github-artifacts-runid ${{ github.run_id }} \
+          flutterpi_tool `
+            build ${{ matrix.target-flags }} ${{ matrix.runtime-mode-flags }} `
+            --verbose `
+            --github-artifacts-repo ${{ github.repository }} `
+            --github-artifacts-runid ${{ github.run_id }} `
             --github-artifacts-auth-token ${{ secrets.GITHUB_TOKEN }}
           
       - name: Package app assets
