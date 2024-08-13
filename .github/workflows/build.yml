@@ -9,7 +9,6 @@ on:
   repository_dispatch:
   workflow_dispatch:
   workflow_call:
-  
 
 defaults:
   # Use bash by default for all jobs, regardless of OS,
@@ -823,7 +822,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          echo "%LOCALAPPDATA%\Pub\Cache\bin"| Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "$env:LOCALAPPDATA\Pub\Cache\bin"
+          echo "$env:PUB_CACHE\bin"
+          
+          echo "$env:LOCALAPPDATA\Pub\Cache\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "$env:PUB_CACHE\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       
       - name: Install flutterpi_tool
         run: |
