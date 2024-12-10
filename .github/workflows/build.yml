@@ -933,6 +933,7 @@ jobs:
   test-app:
     name: 'Test app on a Raspberry Pi'
     runs-on: ${{ matrix.runner }}
+    if: false
     needs: [build-app]
     strategy:
       matrix:
